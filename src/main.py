@@ -1,20 +1,21 @@
-from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
+import uuid
+
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.domain import schemas
+from src.domain import models, schemas
+from src.services.ai_service import parse_order_with_ai
 from src.services.order_service import create_order_transaction
 from src.services.websocket_manager import manager
 
-# Inicialización del limitador por IP
+# 1. Configuración de Rate Limiting
 limiter = Limiter(key_func=get_remote_address)
-
 app = FastAPI(title="Môlt Core API", version="0.1.0")
 
-# Conectamos el limitador al estado de la app y registramos el manejador de errores
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -22,40 +23,67 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.post("/api/v1/orders", status_code=201)
 @limiter.limit("5/minute")
 async def place_order(
-    request: Request,  # Requerido por slowapi para trackear la IP
+    request: Request,
     order_data: schemas.OrderCreate,
     db: Session = Depends(get_db),
 ):
-    """
-    Endpoint transaccional con Rate Limiting.
-    Procesa el pedido y notifica en tiempo real a la cocina.
-    """
-    # 1. Ejecutamos la transacción pesada en la DB (con validación de idempotencia en Redis)
+    # Procesa el pedido con bloqueo pesimista e idempotencia en Redis
     order = create_order_transaction(db, order_data)
 
-    # 2. Si la DB confirmó, emitimos el evento vía WebSockets
+    # Broadcast a Live-Ops (Cocina/Barra)
     await manager.broadcast(
         {
             "event": "NEW_ORDER",
             "order_id": str(order.id),
             "customer": order_data.customer_name,
             "total": float(order.total_amount),
-            "items": [
-                {"product_id": str(i.product_id), "qty": i.quantity} for i in order_data.items
-            ],
+            "items": [{"product_id": str(i.product_id), "qty": i.quantity} for i in order.items],
         }
     )
 
     return {"status": "success", "order_id": order.id, "total": order.total_amount}
 
 
+@app.post("/api/v1/orders/magic", status_code=201)
+@limiter.limit("100/minute")
+async def place_magic_order(request: Request, payload: dict, db: Session = Depends(get_db)):
+    raw_text = payload.get("text", "")
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="El campo 'text' es obligatorio")
+
+    # 1. IA extrae los datos estructurados
+    ai_data = parse_order_with_ai(raw_text)
+
+    # 2. Mapeo Dinámico de Productos
+    order_items = []
+    for item in ai_data.get("items", []):
+        keyword = item.get("product_keyword", "")
+        product = db.query(models.Product).filter(models.Product.name.ilike(f"%{keyword}%")).first()
+
+        if product:
+            order_items.append(
+                schemas.OrderItemCreate(product_id=product.id, quantity=item.get("qty", 1))
+            )
+
+    if not order_items:
+        raise HTTPException(status_code=400, detail="No se reconocieron productos")
+
+    # 3. Construcción del Schema validado
+    order_data = schemas.OrderCreate(
+        phone_number=ai_data.get("phone_number") or "+5400000000",
+        customer_name=ai_data.get("customer_name") or "Cliente IA",
+        items=order_items,
+        idempotency_key=f"ai-{uuid.uuid4()}",
+    )
+
+    return await place_order(request, order_data, db)
+
+
 @app.websocket("/ws/live-ops")
 async def websocket_endpoint(websocket: WebSocket):
-    """Canal de baja latencia para la pantalla de la cocina."""
     await manager.connect(websocket)
     try:
         while True:
-            # Espera mensajes o simplemente mantiene el keep-alive
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -63,4 +91,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "engine": "Bifrost"}
+    return {"status": "ok", "engine": "Bifrost", "version": "0.1.0"}
