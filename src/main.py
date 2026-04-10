@@ -1,5 +1,7 @@
 import uuid
-
+import redis
+import json
+from datetime import datetime
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -19,6 +21,28 @@ app = FastAPI(title="Môlt Core API", version="0.1.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Conexión al escudo
+# decode_responses=True nos permite manejar strings directamente en vez de bytes
+cache = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+
+def shield_order(order_data):
+    """
+    Guarda la orden en memoria RAM antes de intentar 
+    procesarla en la base de datos pesada.
+    """
+    try:
+        order_id = order_data.get('order_id')
+        # Guardamos el JSON de la orden con un tiempo de vida de 12hs
+        cache.setex(f"pending_order:{order_id}", 43200, json.dumps(order_data))
+        
+        # Agregamos a una lista de 'últimos pedidos' para auditoría rápida
+        cache.lpush("molt:audit_log", f"{datetime.now()}: {order_id} cached")
+        cache.ltrim("molt:audit_log", 0, 99) # Solo guardamos los últimos 100 logs
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ Fallo en el blindaje de Redis: {e}")
+        return False
 
 @app.post("/api/v1/orders", status_code=201)
 @limiter.limit("5/minute")
