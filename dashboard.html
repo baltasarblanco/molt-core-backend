@@ -66,102 +66,191 @@
     </main>
 
     <script>
-        const container = document.getElementById('orders-container');
-        const history = document.getElementById('history-container');
-        const statusDiv = document.getElementById('status');
-        const notifSound = document.getElementById('notif-sound');
-        
-        const ws = new WebSocket('ws://localhost:8000/ws/live-ops');
+    const container = document.getElementById('orders-container');
+    const history = document.getElementById('history-container');
+    const statusDiv = document.getElementById('status');
+    const notifSound = document.getElementById('notif-sound');
+    let socket = null;
 
-        ws.onopen = () => {
+    // --- 🛡️ BLINDAJE: RECUPERACIÓN DE ESTADO ---
+    async function loadActiveOrders() {
+        try {
+            const response = await fetch('http://localhost:8000/api/v1/orders/active');
+            if (!response.ok) throw new Error('Error al obtener órdenes');
+            
+            const orders = await response.json();
+            
+            // Limpiamos el tablero antes de cargar para evitar duplicados en reconexiones
+            container.innerHTML = ''; 
+            
+            // Renderizamos las órdenes de la DB (de más vieja a más nueva para que el prepend las ordene bien)
+            orders.reverse().forEach(order => {
+                renderOrder(order);
+            });
+            console.log(`✅ Estado recuperado: ${orders.length} órdenes activas.`);
+        } catch (error) {
+            console.error("❌ Falló el blindaje de recuperación:", error);
+        }
+    }
+
+    // --- 🛡️ BLINDAJE: CONEXIÓN INMORTAL ---
+    function connect() {
+        socket = new WebSocket('ws://localhost:8000/ws/live-ops');
+
+        socket.onopen = () => {
+            console.log("🚀 Conectado al servidor de órdenes");
             statusDiv.innerHTML = `
                 <div class="w-2.5 h-2.5 bg-green-500 rounded-full shadow-[0_0_15px_rgba(34,197,94,0.5)]"></div>
-                <span class="text-[10px] font-black uppercase tracking-[0.2em] text-green-500 font-bold">Cocina Conectada</span>
+                <span class="text-[10px] font-black uppercase tracking-[0.2em] text-green-500">Cocina Conectada</span>
             `;
             lucide.createIcons();
         };
 
-        ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.event === "NEW_ORDER") {
-                // ACTIVAR SONIDO
-                notifSound.play().catch(e => console.log("Interacción requerida para audio"));
+                // Notificación visual y sonora
+                notifSound.play().catch(e => console.log("Esperando interacción para audio..."));
                 renderOrder(data);
             }
         };
 
-        function renderOrder(order) {
-            const card = document.createElement('div');
-            card.id = `order-${order.order_id}`;
-            card.className = 'order-card bg-zinc-900 border-l-4 border-amber-500 rounded-3xl p-6 flex flex-col justify-between shadow-2xl relative group overflow-hidden';
-            
-            const itemsHtml = order.items.map(item => {
-                const isBeer = item.product_id.includes('3c01');
-                return `
-                <div class="flex items-center justify-between bg-white/5 p-4 rounded-2xl border border-white/5">
-                    <div class="flex items-center gap-4">
-                        <div class="p-2 bg-zinc-800 rounded-xl text-amber-500">
-                            <i data-lucide="${isBeer ? 'beer' : 'utensils-crosses'}" class="w-5 h-5"></i>
-                        </div>
-                        <span class="font-bold text-lg">${isBeer ? 'Pinta IPA' : 'Hamburguesa'}</span>
-                    </div>
-                    <span class="text-3xl font-black text-amber-500">x${item.qty}</span>
-                </div>`;
-            }).join('');
-
-            card.innerHTML = `
-                <div>
-                    <div class="flex justify-between items-start mb-6">
-                        <div>
-                            <span class="text-[10px] font-black text-zinc-600 uppercase tracking-widest">ID #${order.order_id.substring(0,6)}</span>
-                            <h2 class="text-3xl font-black text-white leading-none mt-1">${order.customer}</h2>
-                        </div>
-                        <div class="flex items-center gap-2 text-amber-500 font-mono text-xs bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/20">
-                            <i data-lucide="clock" class="w-3 h-3"></i> <span class="timer">00:00</span>
-                        </div>
-                    </div>
-                    <div class="space-y-3">${itemsHtml}</div>
-                </div>
-
-                <div class="mt-8 pt-6 border-t border-zinc-800/50">
-                    <div class="flex justify-between items-center mb-6 px-1">
-                        <span class="text-zinc-500 font-bold text-[10px] uppercase tracking-widest italic">Total Orden</span>
-                        <span class="text-2xl font-black text-white font-mono">$${order.total}</span>
-                    </div>
-                    <button onclick="dispatchOrder('${order.order_id}', '${order.customer}')" class="w-full bg-zinc-100 hover:bg-white text-black font-black py-5 rounded-2xl transition-all active:scale-[0.98] flex items-center justify-center gap-3">
-                        <i data-lucide="check-circle" class="w-6 h-6"></i> DESPACHAR
-                    </button>
-                </div>
+        socket.onclose = () => {
+            console.log("⚠️ Conexión perdida. Reintentando en 3 segundos...");
+            statusDiv.innerHTML = `
+                <div class="w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse"></div>
+                <span class="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">Reconectando...</span>
             `;
+            // Intento de reconexión automática
+            setTimeout(connect, 3000);
+        };
+
+        socket.onerror = (err) => {
+            console.error("Socket error: ", err);
+            socket.close();
+        };
+    }
+
+    // --- LÓGICA DE RENDERIZADO ---
+    function renderOrder(order) {
+    if (document.getElementById(`order-${order.order_id}`)) return;
+
+    const card = document.createElement('div');
+    card.id = `order-${order.order_id}`;
+    card.className = 'order-card bg-zinc-900 border-l-4 border-amber-500 rounded-3xl p-6 flex flex-col justify-between shadow-2xl relative group overflow-hidden';
+    
+    const itemsHtml = order.items.map(item => {
+        // Lógica de íconos dinámica basada en el nombre real
+        const name = item.name.toLowerCase();
+        let icon = 'utensils-crosses'; // Default: Comida
+        if (name.includes('ipa') || name.includes('birra') || name.includes('pinta')) icon = 'beer';
+        if (name.includes('fernet') || name.includes('coca')) icon = 'glass-water';
+
+        return `
+        <div class="flex items-center justify-between bg-white/5 p-4 rounded-2xl border border-white/5">
+            <div class="flex items-center gap-4">
+                <div class="p-2 bg-zinc-800 rounded-xl text-amber-500">
+                    <i data-lucide="${icon}" class="w-5 h-5"></i>
+                </div>
+                <span class="font-bold text-lg">${item.name}</span> </div>
+            <span class="text-3xl font-black text-amber-500">x${item.qty}</span>
+        </div>`;
+    }).join('');
+
+    // ... (el resto de la función card.innerHTML se mantiene igual)
+    card.innerHTML = `
+        <div>
+            <div class="flex justify-between items-start mb-6">
+                <div>
+                    <span class="text-[10px] font-black text-zinc-600 uppercase tracking-widest">ID #${order.order_id.substring(0,6)}</span>
+                    <h2 class="text-3xl font-black text-white leading-none mt-1">${order.customer}</h2>
+                </div>
+                <div class="flex items-center gap-2 text-amber-500 font-mono text-xs bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/20">
+                    <i data-lucide="clock" class="w-3 h-3"></i> <span class="timer">00:00</span>
+                </div>
+            </div>
+            <div class="space-y-3">${itemsHtml}</div>
+        </div>
+        <div class="mt-8 pt-6 border-t border-zinc-800/50">
+            <div class="flex justify-between items-center mb-6 px-1">
+                <span class="text-zinc-500 font-bold text-[10px] uppercase tracking-widest italic">Total Orden</span>
+                <span class="text-2xl font-black text-white font-mono">$${order.total}</span>
+            </div>
+            <button onclick="dispatchOrder('${order.order_id}', '${order.customer}')" class="w-full bg-zinc-100 hover:bg-white text-black font-black py-5 rounded-2xl transition-all active:scale-[0.98] flex items-center justify-center gap-3">
+                <i data-lucide="check-circle" class="w-6 h-6"></i> DESPACHAR
+            </button>
+        </div>
+    `;
+    
+    container.prepend(card);
+    lucide.createIcons();
+    startTimer(card.querySelector('.timer'));
+}
+
+// --- ⏲️ GESTIÓN DE TIEMPO ---
+    function startTimer(element) {
+        let sec = 0;
+        const interval = setInterval(() => {
+            if (!element.isConnected) { clearInterval(interval); return; }
+            sec++;
+            let m = Math.floor(sec/60).toString().padStart(2,'0');
+            let s = (sec%60).toString().padStart(2,'0');
+            element.innerText = `${m}:${s}`;
             
-            container.prepend(card);
-            lucide.createIcons();
-            startTimer(card.querySelector('.timer'));
-        }
+            // Si pasan 10 mins (600s), se pone rojo (orden demorada)
+            if (sec > 600) {
+                element.parentElement.classList.replace('text-amber-500', 'text-red-500');
+                element.parentElement.classList.add('animate-pulse'); // Plus de urgencia
+            }
+        }, 1000);
+    }
 
-        function startTimer(element) {
-            let sec = 0;
-            const interval = setInterval(() => {
-                if (!element.isConnected) { clearInterval(interval); return; }
-                sec++;
-                let m = Math.floor(sec/60).toString().padStart(2,'0');
-                let s = (sec%60).toString().padStart(2,'0');
-                element.innerText = `${m}:${s}`;
-                if (sec > 600) element.parentElement.classList.replace('text-amber-500', 'text-red-500');
-            }, 1000);
-        }
+    // --- 🚀 LÓGICA DE DESPACHO (ÚNICA Y ASYNC) ---
+    async function dispatchOrder(id, name) {
+        try {
+            console.log(`Intentando despachar orden: ${id}`);
 
-        function dispatchOrder(id, name) {
+            // 1. Avisamos al Backend (Cambiar 'DELIVERED' por tu Enum exacto)
+            const response = await fetch(`http://127.0.0.1:8000/api/v1/orders/${id}/status`, {
+                method: 'PATCH',
+                headers: { 
+                    'Content-Type': 'application/json' 
+                },
+                body: JSON.stringify({ status: 'DELIVERED' }) 
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || "Error en el servidor");
+            }
+
+            // 2. Si el server dio OK, animamos y borramos de pantalla
             const card = document.getElementById(`order-${id}`);
-            card.classList.add('completed-card');
-            
-            const historyItem = document.createElement('div');
-            historyItem.className = 'flex items-center justify-between p-4 bg-zinc-900/50 rounded-2xl border border-zinc-800/50 text-zinc-500 text-xs font-bold';
-            historyItem.innerHTML = `<span>${name}</span> <span class="text-zinc-700 uppercase tracking-widest">Despachado</span>`;
-            history.prepend(historyItem);
+            if (card) {
+                card.classList.add('completed-card');
+                
+                // Agregamos al historial visual rápido
+                const historyItem = document.createElement('div');
+                historyItem.className = 'flex items-center justify-between p-4 bg-zinc-900/50 rounded-2xl border border-zinc-800/50 text-zinc-500 text-xs font-bold mb-2 transition-all opacity-0';
+                historyItem.innerHTML = `<span>${name}</span> <span class="text-green-500 uppercase tracking-widest text-[8px]">OK</span>`;
+                history.prepend(historyItem);
+                setTimeout(() => historyItem.classList.replace('opacity-0', 'opacity-100'), 100);
 
-            setTimeout(() => card.remove(), 600);
+                // Removemos la tarjeta después de la animación
+                setTimeout(() => card.remove(), 600);
+            }
+
+            console.log(`✅ Orden ${id} despachada correctamente.`);
+
+        } catch (error) {
+            console.error("❌ Falló el despacho:", error);
+            alert("No se pudo conectar con el servidor: " + error.message);
         }
-    </script>
-</body>
-</html>
+    }
+
+    // --- 🏁 INICIO DEL SISTEMA ---
+    window.addEventListener('DOMContentLoaded', () => {
+        loadActiveOrders(); // 1. Trae lo que está en la DB (Persistencia)
+        connect();          // 2. Escucha lo nuevo en tiempo real (WebSockets)
+    });
+</script>
