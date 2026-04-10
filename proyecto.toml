@@ -1,0 +1,44 @@
+[project]
+name = "molt-core-backend"
+version = "0.1.0"
+description = "Enterprise B2B Transactional Engine for Môlt"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "sqlalchemy>=2.0.29",
+    "alembic>=1.13.1",
+    "psycopg[binary]>=3.1.18",
+    "pydantic[email]>=2.6.4",
+    "pydantic-settings>=2.2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1.1",
+    "pytest-asyncio>=0.23.6",
+    "ruff>=0.3.5",
+]
+
+[tool.ruff]
+# Configuración estricta de Ruff
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Seleccionamos las reglas más importantes (equivalente a cientos de reglas individuales)
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+    "UP", # pyupgrade
+]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
